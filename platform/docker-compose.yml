@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: centro-fashion-consent-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: consent_platform
+      POSTGRES_USER: consent
+      POSTGRES_PASSWORD: consent_local
+    ports:
+      - "54329:5432"
+    volumes:
+      - consent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U consent -d consent_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ..
+      dockerfile: platform/Dockerfile
+    container_name: centro-fashion-consent-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3333
+      DATABASE_URL: postgresql://consent:consent_local@postgres:5432/consent_platform
+      CONSENT_HMAC_KEY: local-development-hmac-key-change-before-production
+      CONSENT_HMAC_KEY_ID: local-v1
+      ADMIN_TOKEN: centro-fashion-local-admin
+    ports:
+      - "3333:3333"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  consent_postgres_data:

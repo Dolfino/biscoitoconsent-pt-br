@@ -1,0 +1,7 @@
+platform/node_modules
+platform/.data
+platform/.artifacts
+.git
+docs
+playground
+tests
