@@ -120,6 +120,8 @@ describe('API de consentimento', () => {
     const verified = await app.inject({ method: 'GET', url: `/v1/public/receipts/${receiptId}/verify` });
     expect(verified.statusCode).toBe(200);
     expect(verified.json().valid).toBe(true);
+    expect(verified.json().consentId).toBe(recorded.json().receipt.consentId);
+    expect(verified.json().acceptedCategories).toContain('necessary');
   });
 
   it('publica o snapshot imutável da política', async () => {

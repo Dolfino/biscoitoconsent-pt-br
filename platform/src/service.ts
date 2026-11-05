@@ -328,9 +328,9 @@ export async function recordIntegrationDispatch(args: {
 
 export async function verifyReceipt(db: Database, config: AppConfig, receiptId: string) {
   const result = await db.query<{
-    id: string; event_id: string; receipt_payload: Record<string, unknown>;
+    id: string; event_id: string; consent_id: string; receipt_payload: Record<string, unknown>;
     payload_hash: string; signature: string; signing_key_id: string; canonical_payload: unknown;
-  }>(`SELECT r.id, r.event_id, r.receipt_payload, r.payload_hash, r.signature,
+  }>(`SELECT r.id, r.event_id, e.consent_id, r.receipt_payload, r.payload_hash, r.signature,
              r.signing_key_id, e.canonical_payload
       FROM consent_receipts r JOIN consent_events e ON e.id = r.event_id
       WHERE r.id = $1`, [receiptId]);
@@ -340,10 +340,23 @@ export async function verifyReceipt(db: Database, config: AppConfig, receiptId: 
   const valid = receipt.signing_key_id === config.hmacKeyId
     && recomputed.payloadHash === receipt.payload_hash
     && verifyEvidence(receipt.payload_hash, receipt.signature, config.hmacKey);
+  const canonical = receipt.canonical_payload as {
+    acceptedCategories?: unknown;
+    acceptedServices?: unknown;
+  };
+  const acceptedCategories = Array.isArray(canonical.acceptedCategories)
+    ? canonical.acceptedCategories.filter((item): item is string => typeof item === 'string')
+    : [];
+  const acceptedServices = canonical.acceptedServices && typeof canonical.acceptedServices === 'object'
+    ? canonical.acceptedServices
+    : {};
   return {
     receiptId: receipt.id,
     eventId: receipt.event_id,
+    consentId: receipt.consent_id,
     valid,
+    acceptedCategories,
+    acceptedServices,
     payloadHash: receipt.payload_hash,
     signingKeyId: receipt.signing_key_id,
     checkedAt: new Date().toISOString()
