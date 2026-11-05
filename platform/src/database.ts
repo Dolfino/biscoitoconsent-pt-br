@@ -41,6 +41,7 @@ export async function createDatabase(path: string, databaseUrl?: string): Promis
     }
   }
   await applyMigration(db, '002_evidence_v2', './migrations/002_evidence_v2.sql');
+  await applyMigration(db, '003_classify_legacy_policy_hashes', './migrations/003_classify_legacy_policy_hashes.sql');
   await seedDatabase(db);
   return db;
 }
@@ -125,8 +126,10 @@ async function seedDatabase(db: Database) {
   }
   await db.query(
     `INSERT INTO policy_versions
-       (id, organization_id, site_id, revision, status, policy_url, terms_url, content_hash, published_at)
-     VALUES ($1, $2, $3, 1, 'published', '/politica-de-privacidade', '/termos', 'pilot-policy-v1', now())
+       (id, organization_id, site_id, revision, status, policy_url, terms_url, content_hash,
+        hash_algorithm, content_mime_type, snapshot_schema_version, published_at)
+     VALUES ($1, $2, $3, 1, 'published', '/politica-de-privacidade', '/termos', 'pilot-policy-v1',
+             'LEGACY-UNVERIFIED', 'text/plain', 1, now())
      ON CONFLICT (id) DO NOTHING`,
     [PILOT.legacyPolicyId, PILOT.organizationId, PILOT.siteId]
   );

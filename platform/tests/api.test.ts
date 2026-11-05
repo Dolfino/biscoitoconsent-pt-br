@@ -137,6 +137,19 @@ describe('API de consentimento', () => {
     expect(response.json().content_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('não apresenta o identificador legado como se fosse SHA-256', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/public/policies/1?siteKey=qez_local_public_key'
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      revision: 1,
+      hash_algorithm: 'LEGACY-UNVERIFIED',
+      content_mime_type: 'text/plain'
+    });
+  });
+
   it('correlaciona e assina disparo real do Meta Pixel', async () => {
     const recorded = await post(payload({
       categories: ['necessary', 'analytics', 'advertising'],
