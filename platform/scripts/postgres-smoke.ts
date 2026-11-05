@@ -22,7 +22,7 @@ const response = await fetch(`${baseUrl}/v1/public/consent-events/browser`, {
     consentId,
     categories: ['necessary', 'analytics'],
     services: { analytics: ['google_analytics'] },
-    revision: 1,
+    revision: 2,
     consentTimestamp: new Date().toISOString(),
     lastConsentTimestamp: new Date().toISOString(),
     languageCode: 'pt-BR',

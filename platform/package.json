@@ -1,11 +1,11 @@
 {
   "name": "centro-fashion-consent-platform",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc --project tsconfig.build.json && node -e \"require('node:fs').copyFileSync('src/schema.sql', 'build/schema.sql')\"",
+    "build": "tsc --project tsconfig.build.json && node -e \"const fs=require('node:fs');fs.copyFileSync('src/schema.sql','build/schema.sql');fs.cpSync('src/migrations','build/migrations',{recursive:true})\"",
     "start": "node build/server.js",
     "test": "vitest run --config vitest.config.ts",
     "test:browser": "tsx scripts/browser-smoke.ts",
@@ -14,19 +14,19 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.3.14",
-    "@fastify/cors": "^11.1.0",
-    "@fastify/static": "^8.3.0",
-    "fastify": "^5.6.2",
-    "pg": "^8.16.3",
-    "zod": "^4.1.12"
+    "@electric-sql/pglite": "^0.5.15",
+    "@fastify/cors": "^11.4.1",
+    "@fastify/static": "^10.1.10",
+    "fastify": "^5.12.8",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^24.10.0",
-    "@types/pg": "^8.15.6",
-    "playwright-core": "^1.56.1",
-    "tsx": "^4.20.6",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.6"
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "playwright-core": "^1.64.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
   }
 }

@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
+import { canonicalJson } from './evidence.js';
+import { PILOT_POLICY_V2, PILOT_POLICY_V2_ID } from './policy.js';
 
 export type QueryResult<T> = { rows: T[] };
 export interface Database {
@@ -13,9 +15,10 @@ export interface Database {
 export const PILOT = {
   organizationId: '10000000-0000-4000-8000-000000000001',
   siteId: '20000000-0000-4000-8000-000000000001',
-  policyId: '30000000-0000-4000-8000-000000000001',
+  legacyPolicyId: '30000000-0000-4000-8000-000000000001',
+  policyId: PILOT_POLICY_V2_ID,
   siteKey: 'qez_local_public_key',
-  revision: 1
+  revision: 2
 } as const;
 
 export async function createDatabase(path: string, databaseUrl?: string): Promise<Database> {
@@ -37,8 +40,31 @@ export async function createDatabase(path: string, databaseUrl?: string): Promis
       });
     }
   }
+  await applyMigration(db, '002_evidence_v2', './migrations/002_evidence_v2.sql');
   await seedDatabase(db);
   return db;
+}
+
+async function applyMigration(
+  db: Database & { exec?: (sql: string) => Promise<unknown> },
+  version: string,
+  relativePath: string
+) {
+  const applied = await db.query<{ version: string }>(
+    'SELECT version FROM schema_migrations WHERE version = $1',
+    [version]
+  );
+  if (applied.rows.length) return;
+
+  const sql = await readFile(new URL(relativePath, import.meta.url), 'utf8');
+  if (db.exec) {
+    await db.exec(`BEGIN; ${sql} INSERT INTO schema_migrations (version) VALUES ('${version}'); COMMIT;`);
+    return;
+  }
+  await db.transaction(async (tx) => {
+    await tx.query(sql);
+    await tx.query('INSERT INTO schema_migrations (version) VALUES ($1)', [version]);
+  });
 }
 
 function createPostgresDatabase(connectionString: string): Database {
@@ -102,7 +128,28 @@ async function seedDatabase(db: Database) {
        (id, organization_id, site_id, revision, status, policy_url, terms_url, content_hash, published_at)
      VALUES ($1, $2, $3, 1, 'published', '/politica-de-privacidade', '/termos', 'pilot-policy-v1', now())
      ON CONFLICT (id) DO NOTHING`,
-    [PILOT.policyId, PILOT.organizationId, PILOT.siteId]
+    [PILOT.legacyPolicyId, PILOT.organizationId, PILOT.siteId]
+  );
+
+  const policySnapshot = canonicalJson(PILOT_POLICY_V2);
+  const policyHash = createHash('sha256').update(policySnapshot).digest('hex');
+  await db.query(
+    `INSERT INTO policy_versions
+       (id, organization_id, site_id, revision, status, policy_url, terms_url,
+        content_hash, hash_algorithm, content_mime_type, snapshot_schema_version,
+        content_snapshot, valid_from, supersedes_id, published_at)
+     VALUES ($1, $2, $3, 2, 'published', '/politica-de-privacidade/', NULL,
+             $4, 'SHA-256', 'application/vnd.qez.consent-policy+json', 2,
+             $5::jsonb, now(), $6, now())
+     ON CONFLICT (id) DO NOTHING`,
+    [PILOT.policyId, PILOT.organizationId, PILOT.siteId, policyHash, policySnapshot, PILOT.legacyPolicyId]
+  );
+  await db.query(
+    `UPDATE policy_versions
+     SET status = 'superseded',
+         valid_until = COALESCE(valid_until, (SELECT published_at FROM policy_versions WHERE id = $1))
+     WHERE id = $2 AND status = 'published'`,
+    [PILOT.policyId, PILOT.legacyPolicyId]
   );
   const categories = [
     ['necessary', 'Cookies estritamente necessários', true, 1],

@@ -2,10 +2,17 @@ import path from 'node:path';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
-import { browserConsentSchema } from './contracts.js';
+import { browserConsentSchema, integrationDispatchSchema } from './contracts.js';
 import { createDatabase, PILOT, type Database } from './database.js';
 import { getConfig, type AppConfig } from './config.js';
-import { ConsentError, findSite, processOutbox, recordBrowserConsent, verifyReceipt } from './service.js';
+import {
+  ConsentError,
+  findSite,
+  processOutbox,
+  recordBrowserConsent,
+  recordIntegrationDispatch,
+  verifyReceipt
+} from './service.js';
 import { openapi } from './openapi.js';
 
 export async function buildApp(options: { config?: AppConfig; db?: Database } = {}) {
@@ -43,7 +50,9 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
     const query = request.query as { siteKey?: string };
     const site = await findSite(db, query.siteKey || '');
     const policy = await db.query(
-      `SELECT id, revision, policy_url, terms_url FROM policy_versions
+      `SELECT id, revision, policy_url, terms_url, content_hash, hash_algorithm,
+              content_mime_type, snapshot_schema_version, published_at
+       FROM policy_versions
        WHERE site_id = $1 AND status = 'published' ORDER BY revision DESC LIMIT 1`, [site.id]
     );
     const categories = await db.query(
@@ -62,6 +71,25 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
       categories: categories.rows,
       services: services.rows
     };
+  });
+
+  app.get('/v1/public/policies/:revision', async (request, reply) => {
+    const query = request.query as { siteKey?: string };
+    const revision = Number((request.params as { revision: string }).revision);
+    if (!Number.isInteger(revision) || revision < 0) {
+      return reply.code(400).send({ code: 'invalid_revision' });
+    }
+    const site = await findSite(db, query.siteKey || '');
+    const result = await db.query(
+      `SELECT revision, status, policy_url, terms_url, content_hash, hash_algorithm,
+              content_mime_type, snapshot_schema_version, content_snapshot,
+              valid_from, valid_until, published_at
+       FROM policy_versions
+       WHERE site_id = $1 AND revision = $2 AND status IN ('published', 'superseded')`,
+      [site.id, revision]
+    );
+    if (!result.rows[0]) return reply.code(404).send({ code: 'policy_not_found' });
+    return result.rows[0];
   });
 
   app.post('/v1/public/consent-events/browser', async (request, reply) => {
@@ -85,6 +113,37 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
         origin: request.headers.origin,
         idempotencyKey,
         input: parsed.data
+      });
+      return reply.code(result.duplicate ? 200 : 201).send(result);
+    } catch (error) {
+      if (error instanceof ConsentError) {
+        return reply.code(error.statusCode).send({ code: error.code, message: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post('/v1/public/integration-dispatches/browser', async (request, reply) => {
+    const siteKey = String(request.headers['x-consent-site-key'] || '');
+    const idempotencyKey = String(request.headers['idempotency-key'] || '');
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return reply.code(400).send({ code: 'invalid_idempotency_key', message: 'Idempotency-Key é obrigatório.' });
+    }
+    if (!allowRequest(`dispatch:${siteKey}:${request.ip}`)) {
+      return reply.code(429).send({ code: 'rate_limited', message: 'Muitas solicitações. Tente novamente em instantes.' });
+    }
+    const parsed = integrationDispatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ code: 'invalid_payload', issues: parsed.error.issues });
+    }
+    try {
+      const result = await recordIntegrationDispatch({
+        db,
+        config,
+        siteKey,
+        origin: request.headers.origin,
+        idempotencyKey,
+        input: { ...parsed.data, transport: 'browser' }
       });
       return reply.code(result.duplicate ? 200 : 201).send(result);
     } catch (error) {
@@ -151,6 +210,19 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
       `SELECT status, count(*)::int AS total FROM outbox_events GROUP BY status ORDER BY status`
     );
     return { statuses: result.rows };
+  });
+
+  app.get('/v1/admin/integration-dispatches', { preHandler: adminGuard(config) }, async () => {
+    const result = await db.query(
+      `SELECT id, consent_event_id, consent_id, provider, service_key, provider_event_id,
+              event_name, status, transport, dispatch_timestamp, received_at,
+              provider_payload_hash, payload_hash, signature, signing_key_id, sdk_version
+       FROM integration_dispatches
+       WHERE site_id = $1
+       ORDER BY dispatch_timestamp DESC LIMIT 200`,
+      [PILOT.siteId]
+    );
+    return { dispatches: result.rows };
   });
 
   app.setErrorHandler((error, _request, reply) => {

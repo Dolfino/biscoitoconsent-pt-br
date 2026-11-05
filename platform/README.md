@@ -60,6 +60,58 @@ Em produção, a URL prevista da API é `https://consent.qez.com.br`.
 - migrations controladas pela tabela `schema_migrations`;
 - painel e SDK/browser do piloto.
 
+## Evidência versão 2
+
+A revisão 2 preserva um snapshot canônico completo da política e calcula seu
+`content_hash` com SHA-256. A revisão 1 permanece no banco como `superseded`
+para que os recibos históricos continuem válidos.
+
+Os novos eventos também registram, sem parâmetros de consulta:
+
+- URL da página em que a escolha ocorreu;
+- origem do referenciador;
+- fuso horário informado pelo navegador.
+
+Não são armazenados IP bruto nem fingerprint do dispositivo.
+
+## Auditoria de integrações
+
+A tabela `integration_dispatches` correlaciona um disparo real de Meta ou
+Google ao evento de consentimento que o autorizou. O endpoint é:
+
+```text
+POST /v1/public/integration-dispatches/browser
+```
+
+O cliente deve informar `consentEventId`, `providerEventId`, serviço, nome do
+evento, horário e status. A API impede o status `sent` quando o serviço não
+estava autorizado, deduplica a requisição e assina a evidência com HMAC.
+
+No site QEZ, integrações reais podem chamar, logo após o envio ao provedor:
+
+```js
+await window.CentroFashionConsent.recordIntegrationDispatch({
+  provider: "meta",
+  serviceKey: "meta_pixel",
+  providerEventId: eventIdEnviadoParaAMeta,
+  eventName: "PageView",
+  status: "sent",
+  metadata: { pagePath: location.pathname }
+});
+```
+
+Essa função não ativa Meta ou Google; ela somente registra um envio que a
+integração efetivamente realizou. O payload bruto do provedor não é salvo.
+
+O pgAdmin pode exportar um dossiê diário pela view somente leitura:
+
+```sql
+SELECT *
+FROM consent_evidence_report
+WHERE (consent_timestamp AT TIME ZONE 'America/Fortaleza')::date = DATE '2026-11-05'
+ORDER BY consent_timestamp;
+```
+
 O token administrativo local é `centro-fashion-local-admin`. O painel solicita esse token e o mantém somente na aba atual (`sessionStorage`); ele não fica embutido no JavaScript.
 
 ## Produção

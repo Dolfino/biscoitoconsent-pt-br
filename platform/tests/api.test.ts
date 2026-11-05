@@ -23,7 +23,7 @@ describe('API de consentimento', () => {
     consentId: 'consent-browser-123456',
     categories: ['necessary', 'analytics'],
     services: { analytics: ['google_analytics'] },
-    revision: 1,
+    revision: 2,
     consentTimestamp: '2026-11-04T16:30:00.000Z',
     lastConsentTimestamp: '2026-11-04T16:30:00.000Z',
     languageCode: 'pt-BR',
@@ -53,7 +53,12 @@ describe('API de consentimento', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.consentDays).toBe(182);
-    expect(body.policy).toMatchObject({ revision: 1 });
+    expect(body.policy).toMatchObject({
+      revision: 2,
+      hash_algorithm: 'SHA-256',
+      snapshot_schema_version: 2
+    });
+    expect(body.policy.content_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(body.categories).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'necessary', required: true })
     ]));
@@ -115,5 +120,98 @@ describe('API de consentimento', () => {
     const verified = await app.inject({ method: 'GET', url: `/v1/public/receipts/${receiptId}/verify` });
     expect(verified.statusCode).toBe(200);
     expect(verified.json().valid).toBe(true);
+  });
+
+  it('publica o snapshot imutável da política', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/public/policies/2?siteKey=qez_local_public_key'
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      revision: 2,
+      hash_algorithm: 'SHA-256',
+      snapshot_schema_version: 2,
+      content_snapshot: { schemaVersion: 2, revision: 2 }
+    });
+    expect(response.json().content_hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('correlaciona e assina disparo real do Meta Pixel', async () => {
+    const recorded = await post(payload({
+      categories: ['necessary', 'analytics', 'advertising'],
+      services: { analytics: ['google_analytics'], advertising: ['meta_pixel'] }
+    }));
+    const receipt = recorded.json().receipt;
+    const idempotencyKey = randomUUID();
+    const request = {
+      method: 'POST',
+      url: '/v1/public/integration-dispatches/browser',
+      headers: {
+        origin: 'http://localhost:3333',
+        'x-consent-site-key': 'qez_local_public_key',
+        'idempotency-key': idempotencyKey
+      },
+      payload: {
+        consentEventId: receipt.eventId,
+        consentId: receipt.consentId,
+        provider: 'meta',
+        serviceKey: 'meta_pixel',
+        providerEventId: randomUUID(),
+        eventName: 'PageView',
+        status: 'sent',
+        transport: 'browser',
+        dispatchTimestamp: '2026-11-05T12:00:00.000Z',
+        metadata: { pagePath: '/' },
+        sdkVersion: 'test'
+      }
+    } as const;
+    const response = await app.inject(request);
+    expect(response.statusCode).toBe(201);
+    expect(response.json().dispatch).toMatchObject({
+      consentEventId: receipt.eventId,
+      provider: 'meta',
+      status: 'sent'
+    });
+    expect(response.json().dispatch.signature).toMatch(/^[a-f0-9]{64}$/);
+
+    const duplicate = await app.inject(request);
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({
+      duplicate: true,
+      dispatch: {
+        dispatchId: response.json().dispatch.dispatchId,
+        consentEventId: receipt.eventId,
+        provider: 'meta',
+        status: 'sent'
+      }
+    });
+  });
+
+  it('impede registrar envio Meta sem autorização', async () => {
+    const recorded = await post(payload({ categories: ['necessary'], services: {} }));
+    const receipt = recorded.json().receipt;
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/public/integration-dispatches/browser',
+      headers: {
+        origin: 'http://localhost:3333',
+        'x-consent-site-key': 'qez_local_public_key',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        consentEventId: receipt.eventId,
+        consentId: receipt.consentId,
+        provider: 'meta',
+        serviceKey: 'meta_pixel',
+        providerEventId: randomUUID(),
+        eventName: 'PageView',
+        status: 'sent',
+        dispatchTimestamp: '2026-11-05T12:00:00.000Z',
+        sdkVersion: 'test'
+      }
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('consent_not_granted');
   });
 });

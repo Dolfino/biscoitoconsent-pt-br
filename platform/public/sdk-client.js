@@ -1,6 +1,6 @@
 const SITE_KEY = 'qez_local_public_key';
 const API_URL = '/v1/public/consent-events/browser';
-const SDK_VERSION = '0.1.0';
+const SDK_VERSION = '0.2.0';
 const QUEUE_KEY = 'cf_consent_outbox';
 const RECEIPT_KEY = 'cf_consent_receipt';
 
@@ -34,7 +34,10 @@ function enqueueCurrentConsent() {
         consentTimestamp: cookie.consentTimestamp,
         lastConsentTimestamp: cookie.lastConsentTimestamp,
         languageCode: cookie.languageCode || 'pt-BR',
-        sdkVersion: SDK_VERSION
+        sdkVersion: SDK_VERSION,
+        sourceUrl: `${location.origin}${location.pathname}`,
+        ...(document.referrer ? { referrerOrigin: new URL(document.referrer).origin } : {}),
+        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
       }
     });
     saveQueue(queue);

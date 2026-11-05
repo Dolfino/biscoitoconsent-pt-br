@@ -1,7 +1,14 @@
 import type { Database } from './database.js';
 import { randomUUID } from './database.js';
 import type { AppConfig } from './config.js';
-import type { BrowserConsent, CanonicalConsentEvent, ConsentAction, SelectionMode } from './contracts.js';
+import type {
+  BrowserConsent,
+  CanonicalConsentEvent,
+  CanonicalIntegrationDispatch,
+  ConsentAction,
+  IntegrationDispatch,
+  SelectionMode
+} from './contracts.js';
 import { signEvidence, verifyEvidence } from './evidence.js';
 
 type SiteRow = {
@@ -76,7 +83,7 @@ export async function recordBrowserConsent(args: {
 
   const policyResult = await db.query<PolicyRow>(
     `SELECT id, revision, content_hash FROM policy_versions
-     WHERE site_id = $1 AND revision = $2 AND status = 'published'`, [site.id, input.revision]
+     WHERE site_id = $1 AND revision = $2 AND status IN ('published', 'superseded')`, [site.id, input.revision]
   );
   const policy = policyResult.rows[0];
   if (!policy) throw new ConsentError(422, 'unknown_revision', 'Revisão não publicada ou não pertencente ao site.');
@@ -112,6 +119,8 @@ export async function recordBrowserConsent(args: {
   const action = await classifyAction(db, site.id, input.consentId, selectionMode);
   const receivedAt = new Date().toISOString();
   const eventId = input.eventId || randomUUID();
+  const sourceUrl = sanitizeSourceUrl(input.sourceUrl);
+  const referrerOrigin = sanitizeOrigin(input.referrerOrigin);
   const canonical: CanonicalConsentEvent = {
     eventId,
     organizationId: site.organization_id,
@@ -128,7 +137,10 @@ export async function recordBrowserConsent(args: {
     consentTimestamp: input.consentTimestamp,
     lastConsentTimestamp: input.lastConsentTimestamp,
     receivedAt,
-    sdkVersion: input.sdkVersion
+    sdkVersion: input.sdkVersion,
+    ...(sourceUrl ? { sourceUrl } : {}),
+    ...(referrerOrigin ? { referrerOrigin } : {}),
+    ...(input.clientTimeZone ? { clientTimeZone: input.clientTimeZone } : {})
   };
   const signed = signEvidence(canonical, config.hmacKey);
   const receiptId = randomUUID();
@@ -156,11 +168,13 @@ export async function recordBrowserConsent(args: {
       `INSERT INTO consent_events
        (id, organization_id, site_id, consent_id, idempotency_key, action, selection_mode,
         policy_version_id, policy_revision, language_code, consent_timestamp, last_consent_timestamp,
-        received_at, sdk_version, canonical_payload, payload_hash, signature, signing_key_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)`,
+        received_at, sdk_version, source_url, referrer_origin, client_time_zone,
+        canonical_payload, payload_hash, signature, signing_key_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21)`,
       [eventId, site.organization_id, site.id, input.consentId, idempotencyKey, action, selectionMode,
         policy.id, policy.revision, input.languageCode, input.consentTimestamp, input.lastConsentTimestamp,
-        receivedAt, input.sdkVersion, signed.canonicalPayload, signed.payloadHash, signed.signature, config.hmacKeyId]
+        receivedAt, input.sdkVersion, sourceUrl, referrerOrigin, input.clientTimeZone,
+        signed.canonicalPayload, signed.payloadHash, signed.signature, config.hmacKeyId]
     );
     for (const category of categories) {
       await tx.query(
@@ -192,6 +206,124 @@ export async function recordBrowserConsent(args: {
     );
   });
   return { receipt, duplicate: false };
+}
+
+export async function recordIntegrationDispatch(args: {
+  db: Database;
+  config: AppConfig;
+  siteKey: string;
+  origin?: string;
+  idempotencyKey: string;
+  input: IntegrationDispatch;
+}) {
+  const { db, config, input, idempotencyKey } = args;
+  const site = await findSite(db, args.siteKey, args.origin);
+
+  const duplicate = await db.query<{
+    id: string; consent_event_id: string; provider: string; provider_event_id: string;
+    status: string; payload_hash: string; signature: string; signing_key_id: string; received_at: string;
+  }>(
+    `SELECT id, consent_event_id, provider, provider_event_id, status,
+            payload_hash, signature, signing_key_id, received_at
+     FROM integration_dispatches WHERE site_id = $1 AND idempotency_key = $2`,
+    [site.id, idempotencyKey]
+  );
+  if (duplicate.rows[0]) {
+    const row = duplicate.rows[0];
+    return {
+      dispatch: {
+        dispatchId: row.id,
+        consentEventId: row.consent_event_id,
+        provider: row.provider,
+        providerEventId: row.provider_event_id,
+        status: row.status,
+        receivedAt: row.received_at,
+        payloadHash: row.payload_hash,
+        signature: row.signature,
+        signingKeyId: row.signing_key_id
+      },
+      duplicate: true
+    };
+  }
+
+  const consentResult = await db.query<{
+    event_id: string; consent_id: string; service_key: string; accepted: boolean;
+  }>(
+    `SELECT e.id AS event_id, e.consent_id, sc.service_key, sc.accepted
+     FROM consent_events e
+     JOIN consent_event_service_choices sc ON sc.event_id = e.id
+     WHERE e.id = $1 AND e.site_id = $2 AND e.consent_id = $3 AND sc.service_key = $4`,
+    [input.consentEventId, site.id, input.consentId, input.serviceKey]
+  );
+  const consent = consentResult.rows[0];
+  if (!consent) {
+    throw new ConsentError(422, 'consent_service_not_found', 'Evento de consentimento ou serviço não encontrado.');
+  }
+
+  const expectedService = input.provider === 'meta' ? 'meta_pixel' : 'google_analytics';
+  if (input.serviceKey !== expectedService) {
+    throw new ConsentError(422, 'provider_service_mismatch', 'Provedor e serviço não correspondem.');
+  }
+  if (input.status === 'sent' && !consent.accepted) {
+    throw new ConsentError(409, 'consent_not_granted', 'O serviço não estava autorizado neste consentimento.');
+  }
+
+  const dispatchId = randomUUID();
+  const receivedAt = new Date().toISOString();
+  const canonical: CanonicalIntegrationDispatch = {
+    dispatchId,
+    organizationId: site.organization_id,
+    siteId: site.id,
+    consentEventId: input.consentEventId,
+    consentId: input.consentId,
+    provider: input.provider,
+    serviceKey: input.serviceKey,
+    providerEventId: input.providerEventId,
+    eventName: input.eventName,
+    status: input.status,
+    transport: input.transport,
+    dispatchTimestamp: input.dispatchTimestamp,
+    receivedAt,
+    ...(input.providerPayloadHash ? { providerPayloadHash: input.providerPayloadHash } : {}),
+    metadata: input.metadata,
+    sdkVersion: input.sdkVersion
+  };
+  const signed = signEvidence(canonical, config.hmacKey);
+
+  await db.transaction(async (tx) => {
+    await tx.query(
+      `INSERT INTO signing_keys (id, algorithm, status, valid_from) VALUES ($1, 'HMAC-SHA-256', 'active', now())
+       ON CONFLICT (id) DO NOTHING`, [config.hmacKeyId]
+    );
+    await tx.query(
+      `INSERT INTO integration_dispatches
+       (id, organization_id, site_id, consent_event_id, consent_id, idempotency_key,
+        provider, service_key, provider_event_id, event_name, status, transport,
+        dispatch_timestamp, received_at, provider_payload_hash, metadata,
+        canonical_payload, payload_hash, signature, signing_key_id, sdk_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$19,$20,$21)`,
+      [dispatchId, site.organization_id, site.id, input.consentEventId, input.consentId,
+        idempotencyKey, input.provider, input.serviceKey, input.providerEventId, input.eventName,
+        input.status, input.transport, input.dispatchTimestamp, receivedAt,
+        input.providerPayloadHash, JSON.stringify(input.metadata), signed.canonicalPayload,
+        signed.payloadHash, signed.signature, config.hmacKeyId, input.sdkVersion]
+    );
+  });
+
+  return {
+    dispatch: {
+      dispatchId,
+      consentEventId: input.consentEventId,
+      provider: input.provider,
+      providerEventId: input.providerEventId,
+      status: input.status,
+      receivedAt,
+      payloadHash: signed.payloadHash,
+      signature: signed.signature,
+      signingKeyId: config.hmacKeyId
+    },
+    duplicate: false
+  };
 }
 
 export async function verifyReceipt(db: Database, config: AppConfig, receiptId: string) {
@@ -229,4 +361,19 @@ export async function processOutbox(db: Database) {
     );
   }
   return pending.rows.length;
+}
+
+function sanitizeSourceUrl(value?: string) {
+  if (!value) return undefined;
+  const url = new URL(value);
+  url.username = '';
+  url.password = '';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+function sanitizeOrigin(value?: string) {
+  if (!value) return undefined;
+  return new URL(value).origin;
 }
