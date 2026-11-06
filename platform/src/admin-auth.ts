@@ -14,18 +14,23 @@ export function createAdminAuthorizer(config: AppConfig) {
     : undefined;
   const allowedRoles = new Set(config.oidcAdminRoles);
 
-  return async (authorization: string | undefined) => {
-    if (!authorization?.startsWith('Bearer ')) return false;
-    const token = authorization.slice('Bearer '.length);
+  return async (authorization: string | undefined, forwardedAccessToken?: string) => {
+    const bearerToken = authorization?.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length)
+      : undefined;
+    const token = forwardedAccessToken || bearerToken;
+    if (!token) return false;
     if (config.legacyAdminTokenEnabled && constantTimeTokenMatch(token, config.adminToken)) return true;
     if (!jwks) return false;
 
     try {
       const { payload } = await jwtVerify(token, jwks, {
         issuer: config.oidcIssuerUrl,
-        audience: config.oidcAudience,
         algorithms: ['RS256']
       });
+      const audiences = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
+      const authorizedParty = typeof payload.azp === 'string' ? payload.azp : undefined;
+      if (!audiences.includes(config.oidcAudience) && authorizedParty !== config.oidcAudience) return false;
       const realmAccess = payload.realm_access as { roles?: unknown } | undefined;
       const roles = Array.isArray(realmAccess?.roles)
         ? realmAccess.roles.filter((role): role is string => typeof role === 'string')

@@ -262,7 +262,10 @@ function createAdminGuard(config: AppConfig) {
   const authorize = createAdminAuthorizer(config);
   return async (request: { headers: Record<string, unknown> }, reply: { code: (value: number) => { send: (body: unknown) => unknown } }) => {
     const authorization = typeof request.headers.authorization === 'string' ? request.headers.authorization : undefined;
-    if (!(await authorize(authorization))) return reply.code(401).send({ code: 'unauthorized' });
+    const forwardedAccessToken = typeof request.headers['x-forwarded-access-token'] === 'string'
+      ? request.headers['x-forwarded-access-token']
+      : undefined;
+    if (!(await authorize(authorization, forwardedAccessToken))) return reply.code(401).send({ code: 'unauthorized' });
   };
 }
 
