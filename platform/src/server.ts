@@ -14,11 +14,13 @@ import {
   verifyReceipt
 } from './service.js';
 import { openapi } from './openapi.js';
+import { createAdminAuthorizer } from './admin-auth.js';
 
 export async function buildApp(options: { config?: AppConfig; db?: Database } = {}) {
   const config = options.config || getConfig();
   const db = options.db || await createDatabase(config.databasePath, config.databaseUrl);
   const app = Fastify({ logger: true, bodyLimit: 64 * 1024 });
+  const adminGuard = createAdminGuard(config);
 
   const allowedOrigins = new Set([
     'http://localhost:3333', 'http://127.0.0.1:3333',
@@ -163,7 +165,7 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
     }
   });
 
-  app.get('/v1/admin/summary', { preHandler: adminGuard(config) }, async () => {
+  app.get('/v1/admin/summary', { preHandler: adminGuard }, async () => {
     const totals = await db.query<{ total: number; accepted: number; rejected: number; customized: number }>(
       `SELECT count(*)::int AS total,
        count(*) FILTER (WHERE selection_mode = 'accepted_all')::int AS accepted,
@@ -174,7 +176,7 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
     return { organization: 'Centro Fashion', site: 'qez.com.br', ...totals.rows[0] };
   });
 
-  app.get('/v1/admin/events', { preHandler: adminGuard(config) }, async () => {
+  app.get('/v1/admin/events', { preHandler: adminGuard }, async () => {
     const result = await db.query(
       `SELECT e.id, e.consent_id, e.action, e.selection_mode, e.policy_revision,
               e.received_at, e.payload_hash, e.signing_key_id, r.id AS receipt_id
@@ -184,7 +186,7 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
     return { events: result.rows };
   });
 
-  app.get('/v1/admin/events/:id', { preHandler: adminGuard(config) }, async (request, reply) => {
+  app.get('/v1/admin/events/:id', { preHandler: adminGuard }, async (request, reply) => {
     const result = await db.query(
       `SELECT e.*, r.receipt_payload FROM consent_events e
        JOIN consent_receipts r ON r.event_id = e.id WHERE e.id = $1`, [(request.params as { id: string }).id]
@@ -193,7 +195,7 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
     return result.rows[0];
   });
 
-  app.get('/v1/admin/sites', { preHandler: adminGuard(config) }, async () => {
+  app.get('/v1/admin/sites', { preHandler: adminGuard }, async () => {
     const result = await db.query(
       `SELECT s.id, s.name, s.primary_domain, s.default_consent_days, s.status,
               o.id AS organization_id, o.name AS organization_name,
@@ -205,14 +207,14 @@ export async function buildApp(options: { config?: AppConfig; db?: Database } = 
     return { sites: result.rows };
   });
 
-  app.get('/v1/admin/outbox', { preHandler: adminGuard(config) }, async () => {
+  app.get('/v1/admin/outbox', { preHandler: adminGuard }, async () => {
     const result = await db.query(
       `SELECT status, count(*)::int AS total FROM outbox_events GROUP BY status ORDER BY status`
     );
     return { statuses: result.rows };
   });
 
-  app.get('/v1/admin/integration-dispatches', { preHandler: adminGuard(config) }, async () => {
+  app.get('/v1/admin/integration-dispatches', { preHandler: adminGuard }, async () => {
     const result = await db.query(
       `SELECT id, consent_event_id, consent_id, provider, service_key, provider_event_id,
               event_name, status, transport, dispatch_timestamp, received_at,
@@ -256,10 +258,11 @@ function allowRequest(key: string) {
   return bucket.count <= 60;
 }
 
-function adminGuard(config: AppConfig) {
+function createAdminGuard(config: AppConfig) {
+  const authorize = createAdminAuthorizer(config);
   return async (request: { headers: Record<string, unknown> }, reply: { code: (value: number) => { send: (body: unknown) => unknown } }) => {
-    const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (token !== config.adminToken) return reply.code(401).send({ code: 'unauthorized' });
+    const authorization = typeof request.headers.authorization === 'string' ? request.headers.authorization : undefined;
+    if (!(await authorize(authorization))) return reply.code(401).send({ code: 'unauthorized' });
   };
 }
 

@@ -1,8 +1,5 @@
-const storageKey = 'consent_admin_token';
 const authCard = document.querySelector('#auth-card');
-const authForm = document.querySelector('#auth-form');
 const authError = document.querySelector('#auth-error');
-const tokenInput = document.querySelector('#admin-token');
 const dashboard = document.querySelector('#dashboard');
 
 function escapeHtml(value) {
@@ -11,17 +8,15 @@ function escapeHtml(value) {
   })[character]);
 }
 
-async function loadDashboard(token) {
+async function loadDashboard() {
   authError.textContent = '';
-  const headers = { Authorization: `Bearer ${token}` };
   const responses = await Promise.all([
-    fetch('/v1/admin/summary', { headers }),
-    fetch('/v1/admin/events', { headers })
+    fetch('/v1/admin/summary', { credentials: 'same-origin' }),
+    fetch('/v1/admin/events', { credentials: 'same-origin' })
   ]);
   if (responses.some((response) => response.status === 401)) throw new Error('unauthorized');
   if (responses.some((response) => !response.ok)) throw new Error('request_failed');
   const [summary, events] = await Promise.all(responses.map((response) => response.json()));
-  sessionStorage.setItem(storageKey, token);
   authCard.hidden = true;
   dashboard.hidden = false;
   const values = [summary.total, summary.accepted, summary.rejected, summary.customized];
@@ -38,22 +33,6 @@ async function loadDashboard(token) {
     </tr>`).join('') : '<tr><td colspan="6">Nenhum evento registrado.</td></tr>';
 }
 
-authForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    await loadDashboard(tokenInput.value);
-    tokenInput.value = '';
-  } catch (error) {
-    authError.textContent = error.message === 'unauthorized' ? 'Token inválido.' : 'Não foi possível carregar o painel.';
-  }
+loadDashboard().catch(() => {
+  authError.textContent = 'Não foi possível carregar o painel com a sessão atual.';
 });
-
-document.querySelector('#logout').addEventListener('click', () => {
-  sessionStorage.removeItem(storageKey);
-  dashboard.hidden = true;
-  authCard.hidden = false;
-  tokenInput.focus();
-});
-
-const storedToken = sessionStorage.getItem(storageKey);
-if (storedToken) loadDashboard(storedToken).catch(() => sessionStorage.removeItem(storageKey));

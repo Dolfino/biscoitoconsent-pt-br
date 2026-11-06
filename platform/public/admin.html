@@ -7,13 +7,12 @@
     <div class="page-heading"><div><span class="eyebrow">ORGANIZAÇÃO</span><h1>Consentimentos</h1><p>Site piloto: qez.com.br</p></div><a href="/demo.html">Ver banner</a></div>
     <section class="card auth-card" id="auth-card">
       <h2>Acesso administrativo</h2>
-      <p>Informe o token administrativo. Ele permanecerá somente nesta aba do navegador.</p>
-      <form id="auth-form"><label class="sr-only" for="admin-token">Token administrativo</label><input id="admin-token" name="token" type="password" autocomplete="current-password" required placeholder="Token administrativo"><button type="submit">Entrar</button></form>
+      <p>Acesso protegido pelo login central. Carregando os dados…</p>
       <p class="form-error" id="auth-error" role="alert"></p>
     </section>
     <div id="dashboard" hidden>
       <section class="metrics" id="metrics"><article><b>—</b><span>Total</span></article><article><b>—</b><span>Aceitos</span></article><article><b>—</b><span>Rejeitados</span></article><article><b>—</b><span>Personalizados</span></article></section>
-      <section class="card"><div class="card-heading"><h2>Eventos recentes</h2><button class="link-button" id="logout" type="button">Sair</button></div><div class="table-wrap"><table><thead><tr><th>Data</th><th>Ação</th><th>Escolha</th><th>Revisão</th><th>Consent ID</th><th>Recibo</th></tr></thead><tbody id="events"><tr><td colspan="6">Carregando…</td></tr></tbody></table></div></section>
+      <section class="card"><div class="card-heading"><h2>Eventos recentes</h2><a class="link-button" href="https://app.qez.com.br/">Voltar ao portal</a></div><div class="table-wrap"><table><thead><tr><th>Data</th><th>Ação</th><th>Escolha</th><th>Revisão</th><th>Consent ID</th><th>Recibo</th></tr></thead><tbody id="events"><tr><td colspan="6">Carregando…</td></tr></tbody></table></div></section>
     </div>
   </main>
   <script type="module" src="/admin.js"></script>
